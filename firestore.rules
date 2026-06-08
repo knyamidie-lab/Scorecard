@@ -1,0 +1,65 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // -- HELPERS --
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    // 2. Validation Blueprints (The "Anti-Update-Gap")
+    function isValidAudit(data) {
+      return data.keys().hasAll(['promptContent', 'security', 'governance', 'sustainability', 'summary', 'riskLevel', 'aggregateStatus', 'timestamp', 'userId'])
+        && data.keys().size() >= 9
+        && data.promptContent is string && data.promptContent.size() <= 1000000
+        && data.security is number && data.security >= 0 && data.security <= 100
+        && data.governance is number && data.governance >= 0 && data.governance <= 100
+        && data.sustainability is number && data.sustainability >= 0 && data.sustainability <= 100
+        && data.summary is string && data.summary.size() <= 10000
+        && data.riskLevel is string && data.riskLevel.size() <= 20
+        && data.aggregateStatus is string && data.aggregateStatus.size() <= 20
+        && (!data.keys().contains('rawOutput') || (data.rawOutput is map && data.rawOutput.model is string && data.rawOutput.rawText is string))
+        && data.timestamp == request.time
+        && data.userId == request.auth.uid;
+    }
+
+    // 8. Secure List Queries (The "Query Enforcer")
+    match /audits/{auditId} {
+      allow create: if isSignedIn() && isValidAudit(incoming());
+      allow get: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    match /telemetry/{telemetryId} {
+      allow create: if true; // Public intake for the demo SDK simulation
+      allow read: if isSignedIn();
+    }
+
+    match /settings/{settingId} {
+      allow read: if true;
+      allow write: if isSignedIn(); // Only admins/authed users can trip breaker for now
+    }
+
+    match /feedback/{feedbackId} {
+      allow create: if true; // Allow anyone to submit feedback
+      allow read: if isSignedIn(); // Only authed users can read feedback
+    }
+  }
+}

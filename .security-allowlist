@@ -1,0 +1,6 @@
+# Security scanner allowlist — paths here are exempt from the pre-commit/pre-tool scanner.
+# Each entry is a verified false positive. Keep this list minimal and reviewed.
+
+# Standard env template file. Contains only placeholders, never real secrets.
+# Already protected from commit-with-secrets by .gitignore (.env* ignored, .env.example excepted).
+.env.example

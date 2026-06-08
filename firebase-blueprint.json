@@ -1,0 +1,87 @@
+{
+  "entities": {
+    "Audit": {
+      "title": "Audit",
+      "description": "Result of a Centaur Governance Scorecard audit",
+      "type": "object",
+      "properties": {
+        "promptContent": { "type": "string", "description": "The system prompt content that was audited" },
+        "security": { "type": "number", "description": "Security score 0-100" },
+        "governance": { "type": "number", "description": "Governance score 0-100" },
+        "sustainability": { "type": "number", "description": "Sustainability score 0-100" },
+        "summary": { "type": "string", "description": "Short executive summary of findings" },
+        "riskLevel": { "type": "string", "description": "Risk assessment level (HIGH, MODERATE, MINIMAL)" },
+        "aggregateStatus": { "type": "string", "description": "Overall audit status (VALID, CAUTION, FAIL)" },
+        "rawOutput": {
+          "type": "object",
+          "properties": {
+            "model": { "type": "string" },
+            "usage": { "type": "object" },
+            "rawText": { "type": "string" }
+          },
+          "required": ["model", "rawText"]
+        },
+        "timestamp": { "type": "string", "format": "date-time", "description": "When the audit was performed" },
+        "userId": { "type": "string", "description": "The ID of the user who performed the audit" }
+      },
+      "required": ["promptContent", "security", "governance", "sustainability", "summary", "riskLevel", "aggregateStatus", "timestamp", "userId"]
+    },
+    "Telemetry": {
+      "title": "Telemetry",
+      "description": "Real-time metrics from governed applications",
+      "type": "object",
+      "properties": {
+        "projectId": { "type": "string" },
+        "inputTokens": { "type": "number" },
+        "outputTokens": { "type": "number" },
+        "model": { "type": "string" },
+        "latency": { "type": "number" },
+        "error": { "type": "boolean" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["projectId", "timestamp"]
+    },
+    "Settings": {
+      "title": "Settings",
+      "description": "Global system settings and circuit breaker status",
+      "type": "object",
+      "properties": {
+        "breakerStatus": { "type": "string", "enum": ["CLOSED", "OPEN", "HALF_OPEN"] },
+        "failureThreshold": { "type": "number" },
+        "lastBreakerTrip": { "type": "string", "format": "date-time" },
+        "systemPrompt": { "type": "string" }
+      }
+    },
+    "Feedback": {
+      "title": "Feedback",
+      "description": "User suggestions and issue reports",
+      "type": "object",
+      "properties": {
+        "type": { "type": "string", "enum": ["SUGGESTION", "ISSUE", "OTHER"] },
+        "content": { "type": "string" },
+        "email": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "userId": { "type": "string" }
+      },
+      "required": ["type", "content", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/audits/{auditId}": {
+      "schema": "Audit",
+      "description": "Historical audit records for system prompts"
+    },
+    "/telemetry/{telemetryId}": {
+      "schema": "Telemetry",
+      "description": "Operational metrics and logs"
+    },
+    "/settings/{settingId}": {
+      "schema": "Settings",
+      "description": "System-wide configuration"
+    },
+    "/feedback/{feedbackId}": {
+      "schema": "Feedback",
+      "description": "User feedback and reports"
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "Remix: Centaur Governance Scorecard",
+  "description": "A high-precision audit dashboard for evaluating system prompts across Security, Governance, and Sustainability metrics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
