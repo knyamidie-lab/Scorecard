@@ -6,6 +6,7 @@ import admin from "firebase-admin";
 import { getFirestore } from "firebase-admin/firestore";
 import * as dotenv from "dotenv";
 import nodemailer from "nodemailer";
+import rateLimit from "express-rate-limit";
 
 // Load environment variables
 dotenv.config();
@@ -38,6 +39,25 @@ const ai = new GoogleGenAI({
   }
 });
 
+// Escape user-controlled values before interpolating into HTML (prevents HTML/
+// markup injection into the operator's feedback email).
+const escapeHtml = (s: unknown): string =>
+  String(s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+
+// Conservative email-shape check — used to reject malformed contact addresses.
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// Allowed feedback categories (mirrors metadata.json Feedback.type enum).
+const FEEDBACK_TYPES = ["SUGGESTION", "ISSUE", "OTHER"];
+
+// Max system-prompt length accepted by /api/audit (guards Gemini cost/abuse).
+const MAX_AUDIT_INPUT = 100_000;
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
@@ -47,16 +67,34 @@ async function startServer() {
 
   app.use(express.json());
 
+  // Trust the first proxy hop (Cloud Run / AI Studio terminate TLS upstream) so
+  // express-rate-limit keys on the real client IP from X-Forwarded-For.
+  app.set("trust proxy", 1);
+
+  // Per-IP rate limit for the expensive/abusable endpoints: /api/audit burns
+  // Gemini quota, /api/feedback can drive the operator's SMTP relay.
+  const abuseLimiter = rateLimit({
+    windowMs: 60_000,
+    max: 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "Too many requests. Please slow down and try again shortly." },
+  });
+
   // Feedback Uplink and Mail Transmission Engine
-  app.post("/api/feedback", async (req, res) => {
+  app.post("/api/feedback", abuseLimiter, async (req, res) => {
     try {
       const { type, content, email, userId } = req.body;
       if (!content) {
         return res.status(400).json({ error: "Feedback content is required." });
       }
 
-      const safeType = type || "SUGGESTION";
-      const safeEmail = email || "anonymous";
+      // Whitelist the category and validate the contact email so neither can
+      // carry markup or malformed data downstream.
+      const safeType = FEEDBACK_TYPES.includes(type) ? type : "SUGGESTION";
+      const safeEmail = email && EMAIL_RE.test(String(email).trim())
+        ? String(email).trim()
+        : "anonymous";
 
       let feedbackDocId = "simulated-" + Math.random().toString(36).substring(2, 11);
       let firestoreSaved = false;
@@ -105,12 +143,12 @@ async function startServer() {
             
             <div style="margin-bottom: 24px;">
               <span style="font-size: 10px; text-transform: uppercase; letter-spacing: 1.5px; color: #64748b; font-weight: 700; display: block; margin-bottom: 6px;">Contact Origin</span>
-              <p style="font-size: 13px; color: #cbd5e1; margin: 0; font-family: monospace;">${safeEmail}</p>
+              <p style="font-size: 13px; color: #cbd5e1; margin: 0; font-family: monospace;">${escapeHtml(safeEmail)}</p>
             </div>
 
             <div style="margin-bottom: 24px;">
               <span style="font-size: 10px; text-transform: uppercase; letter-spacing: 1.5px; color: #64748b; font-weight: 700; display: block; margin-bottom: 6px;">Transmission Payload</span>
-              <div style="background-color: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 16px; font-size: 13px; line-height: 1.6; color: #e2e8f0; white-space: pre-wrap;">${content}</div>
+              <div style="background-color: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 16px; font-size: 13px; line-height: 1.6; color: #e2e8f0; white-space: pre-wrap;">${escapeHtml(content)}</div>
             </div>
 
             <div style="font-size: 11px; color: #475569; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 16px;">
@@ -186,9 +224,15 @@ async function startServer() {
   app.post("/api/v1/telemetry", async (req, res) => {
     try {
       const { projectId, latency, error, model, inputTokens, outputTokens } = req.body;
-      const apiKey = req.headers['x-api-key'] || req.body.apiKey;
-      const expectedApiKey = process.env.CENTAUR_API_KEY || "EKJN-729-SECURE";
 
+      // No baked-in default: if the key isn't provisioned, refuse intake rather
+      // than silently accepting a known hardcoded value.
+      const expectedApiKey = process.env.CENTAUR_API_KEY;
+      if (!expectedApiKey) {
+        return res.status(503).json({ error: "Telemetry intake is not configured." });
+      }
+
+      const apiKey = req.headers['x-api-key'] || req.body.apiKey;
       if (apiKey !== expectedApiKey) {
         return res.status(401).json({ error: "Invalid Project API Key" });
       }
@@ -220,21 +264,30 @@ async function startServer() {
     }
   });
 
-  // Get SDK Config for the Integration Guide
+  // Get SDK Config for the Integration Guide.
+  // NOTE: this is a public demo identifier shown in the copy-paste integration
+  // snippet — it is NOT a real authentication secret. Telemetry is gated on the
+  // provisioned CENTAUR_API_KEY (or refused entirely when unset).
   app.get("/api/v1/sdk-config", (req, res) => {
     res.json({
       endpoint: process.env.APP_URL || `http://localhost:${PORT}`,
       projectId: "EKJN-13B-729",
-      apiKey: process.env.CENTAUR_API_KEY || "EKJN-729-SECURE"
+      apiKey: process.env.CENTAUR_API_KEY ?? null
     });
   });
 
   // API Route for performing the audit
-  app.post("/api/audit", async (req, res) => {
+  app.post("/api/audit", abuseLimiter, async (req, res) => {
     const { content, model } = req.body;
-    
-    if (!content) {
+
+    if (!content || typeof content !== "string") {
       return res.status(400).json({ error: "System prompt content is required" });
+    }
+
+    if (content.length > MAX_AUDIT_INPUT) {
+      return res.status(413).json({
+        error: `System prompt exceeds the ${MAX_AUDIT_INPUT.toLocaleString()}-character limit.`,
+      });
     }
 
     let selectedModel = model || "gemini-3.5-flash";
